@@ -1,0 +1,365 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OpenAlex Research Database</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.min.css" rel="stylesheet">
+    <style>
+        body { background-color: #f8f9fa; }
+        .container { max-width: 1400px; }
+        .card { margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }
+        .work-item { border-left: 4px solid #0d6efd; padding-left: 15px; margin-bottom: 20px; }
+        .topic-badge { margin-right: 5px; margin-bottom: 5px; }
+        .stats-value { font-size: 1.5rem; font-weight: bold; color: #0d6efd; }
+        .loading { display: none; text-align: center; padding: 20px; }
+        .classification-result { background: #e7f3ff; padding: 15px; border-radius: 5px; margin-top: 10px; }
+    </style>
+</head>
+<body>
+    <nav class="navbar navbar-dark bg-primary mb-4">
+        <div class="container">
+            <span class="navbar-brand h1">📚 OpenAlex Research Database</span>
+        </div>
+    </nav>
+
+    <div class="container">
+        <!-- Поиск -->
+        <div class="card">
+            <div class="card-header bg-white">
+                <h4>🔍 Поиск в базе OpenAlex</h4>
+            </div>
+            <div class="card-body">
+                <form id="searchForm" class="row g-3">
+                    <div class="col-md-8">
+                        <input type="text" class="form-control" id="searchQuery" placeholder="Введите поисковый запрос (например: machine learning, artificial intelligence)" required>
+                    </div>
+                    <div class="col-md-2">
+                        <input type="number" class="form-control" id="perPage" value="20" min="1" max="100" placeholder="Кол-во">
+                    </div>
+                    <div class="col-md-2">
+                        <button type="submit" class="btn btn-primary w-100">Найти</button>
+                    </div>
+                </form>
+                <div class="loading" id="searchLoading">
+                    <div class="spinner-border text-primary" role="status"></div>
+                    <p>Поиск в базе OpenAlex...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Статистика -->
+        <div class="card" id="statsCard" style="display: none;">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                <h4>📊 Статистика результатов</h4>
+                <button class="btn btn-sm btn-outline-primary" onclick="downloadData('csv')">Скачать CSV</button>
+            </div>
+            <div class="card-body">
+                <div class="row" id="statsContent">
+                    <!-- Статистика будет заполнена здесь -->
+                </div>
+                <div class="row mt-4">
+                    <div class="col-md-6">
+                        <canvas id="yearsChart"></canvas>
+                    </div>
+                    <div class="col-md-6">
+                        <canvas id="topicsChart"></canvas>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Результаты поиска -->
+        <div class="card" id="resultsCard" style="display: none;">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                <h4>📄 Результаты поиска</h4>
+                <div>
+                    <button class="btn btn-sm btn-success me-2" onclick="trainModel()">🤖 Обучить нейросеть</button>
+                    <button class="btn btn-sm btn-outline-primary" onclick="downloadData('json')">Скачать JSON</button>
+                </div>
+            </div>
+            <div class="card-body" id="resultsContent">
+                <!-- Результаты будут заполнены здесь -->
+            </div>
+        </div>
+
+        <!-- Классификатор -->
+        <div class="card" id="classifierCard">
+            <div class="card-header bg-white">
+                <h4>🧠 Классификация тематик (нейросеть)</h4>
+            </div>
+            <div class="card-body">
+                <div class="alert alert-info">
+                    Сначала выполните поиск и обучите модель на найденных работах, затем используйте классификатор.
+                </div>
+                <form id="classifyForm" class="mb-3">
+                    <div class="mb-3">
+                        <label for="classifyText" class="form-label">Текст для классификации:</label>
+                        <textarea class="form-control" id="classifyText" rows="4" placeholder="Введите название или абстракт работы для определения тематики"></textarea>
+                    </div>
+                    <button type="submit" class="btn btn-primary">Классифицировать</button>
+                </form>
+                <div class="loading" id="classifyLoading">
+                    <div class="spinner-border text-primary" role="status"></div>
+                    <p>Классификация...</p>
+                </div>
+                <div id="classificationResult"></div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <script>
+        let worksCount = 0;
+        let yearsChart = null;
+        let topicsChart = null;
+
+        // Поиск
+        document.getElementById('searchForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const query = document.getElementById('searchQuery').value;
+            const perPage = document.getElementById('perPage').value;
+            
+            document.getElementById('searchLoading').style.display = 'block';
+            document.getElementById('resultsCard').style.display = 'none';
+            document.getElementById('statsCard').style.display = 'none';
+            
+            try {
+                const response = await fetch('/api/search', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({query, per_page: parseInt(perPage)})
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    worksCount = data.count;
+                    displayResults(data.results);
+                    loadStatistics();
+                    document.getElementById('resultsCard').style.display = 'block';
+                } else {
+                    alert('Ошибка: ' + data.error);
+                }
+            } catch (error) {
+                alert('Ошибка соединения: ' + error.message);
+            } finally {
+                document.getElementById('searchLoading').style.display = 'none';
+            }
+        });
+
+        // Отображение результатов
+        function displayResults(results) {
+            const container = document.getElementById('resultsContent');
+            container.innerHTML = '';
+            
+            results.forEach((work, index) => {
+                const div = document.createElement('div');
+                div.className = 'work-item';
+                
+                const authors = work.authorships ? work.authorships.slice(0, 3).map(a => a.author.display_name).join(', ') : '';
+                const topics = work.topics ? work.topics.slice(0, 5).map(t => 
+                    `<span class="badge bg-info topic-badge">${t.display_name}</span>`
+                ).join('') : '';
+                
+                div.innerHTML = `
+                    <h5>${index + 1}. ${work.title || 'Без названия'}</h5>
+                    <p class="text-muted mb-1">
+                        ${authors ? '👥 ' + authors + ' | ' : ''}
+                        📅 ${work.publication_year || 'н/д'} | 
+                        🔗 ${work.cited_by_count || 0} цитирований | 
+                        ${work.open_access?.is_oa ? '<span class="badge bg-success">Открытый доступ</span>' : ''}
+                    </p>
+                    <p class="small text-secondary">${work.abstract ? work.abstract.substring(0, 300) + '...' : 'Абстракт недоступен'}</p>
+                    <div class="mb-2">${topics}</div>
+                    <button class="btn btn-sm btn-outline-primary" onclick="classifyWork('${(work.title || '').replace(/'/g, "\\'")} ${(work.abstract || '').substring(0, 100).replace(/'/g, "\\'")}')">
+                        Классифицировать эту работу
+                    </button>
+                `;
+                
+                container.appendChild(div);
+            });
+        }
+
+        // Загрузка статистики
+        async function loadStatistics() {
+            try {
+                const response = await fetch('/api/statistics');
+                const stats = await response.json();
+                
+                if (stats.total_works) {
+                    document.getElementById('statsCard').style.display = 'block';
+                    
+                    const statsContent = document.getElementById('statsContent');
+                    statsContent.innerHTML = `
+                        <div class="col-md-2 text-center">
+                            <div class="stats-value">${stats.total_works}</div>
+                            <div>Всего работ</div>
+                        </div>
+                        <div class="col-md-2 text-center">
+                            <div class="stats-value">${stats.open_access_count || 0}</div>
+                            <div>Открытый доступ</div>
+                        </div>
+                        <div class="col-md-2 text-center">
+                            <div class="stats-value">${stats.avg_authors || 0}</div>
+                            <div>Ср. авторов</div>
+                        </div>
+                        <div class="col-md-2 text-center">
+                            <div class="stats-value">${stats.citations_distribution?.mean || 0}</div>
+                            <div>Ср. цитирований</div>
+                        </div>
+                        <div class="col-md-2 text-center">
+                            <div class="stats-value">${stats.citations_distribution?.max || 0}</div>
+                            <div>Макс. цитирований</div>
+                        </div>
+                        <div class="col-md-2 text-center">
+                            <div class="stats-value">${Object.keys(stats.years_distribution || {}).length}</div>
+                            <div>Уникальных лет</div>
+                        </div>
+                    `;
+                    
+                    // Графики
+                    renderCharts(stats);
+                }
+            } catch (error) {
+                console.error('Error loading statistics:', error);
+            }
+        }
+
+        // Рендеринг графиков
+        function renderCharts(stats) {
+            // График по годам
+            const yearsCtx = document.getElementById('yearsChart').getContext('2d');
+            if (yearsChart) yearsChart.destroy();
+            
+            const yearsData = stats.years_distribution || {};
+            const sortedYears = Object.keys(yearsData).sort();
+            
+            yearsChart = new Chart(yearsCtx, {
+                type: 'bar',
+                data: {
+                    labels: sortedYears,
+                    datasets: [{
+                        label: 'Публикации по годам',
+                        data: sortedYears.map(y => yearsData[y]),
+                        backgroundColor: 'rgba(13, 110, 253, 0.7)'
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        title: { display: true, text: 'Распределение публикаций по годам' }
+                    }
+                }
+            });
+            
+            // График топиков
+            const topicsCtx = document.getElementById('topicsChart').getContext('2d');
+            if (topicsChart) topicsChart.destroy();
+            
+            const topicsData = stats.top_topics || {};
+            
+            topicsChart = new Chart(topicsCtx, {
+                type: 'doughnut',
+                data: {
+                    labels: Object.keys(topicsData),
+                    datasets: [{
+                        data: Object.values(topicsData),
+                        backgroundColor: [
+                            '#FF6384', '#36A2EB', '#FFCE56', '#4BC0C0', '#9966FF',
+                            '#FF9F40', '#FF6384', '#C9CBCF', '#4BC0C0', '#36A2EB'
+                        ]
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    plugins: {
+                        title: { display: true, text: 'Топ-10 тематик' }
+                    }
+                }
+            });
+        }
+
+        // Обучение модели
+        async function trainModel() {
+            const button = event.target;
+            button.disabled = true;
+            button.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Обучение...';
+            
+            try {
+                const response = await fetch('/api/train', {method: 'POST'});
+                const data = await response.json();
+                
+                if (data.success) {
+                    alert(`✅ ${data.message}\nОбразцов: ${data.samples_count}`);
+                } else {
+                    alert('❌ ' + data.error);
+                }
+            } catch (error) {
+                alert('Ошибка: ' + error.message);
+            } finally {
+                button.disabled = false;
+                button.innerHTML = '🤖 Обучить нейросеть';
+            }
+        }
+
+        // Классификация
+        document.getElementById('classifyForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            
+            const text = document.getElementById('classifyText').value;
+            
+            document.getElementById('classifyLoading').style.display = 'block';
+            document.getElementById('classificationResult').innerHTML = '';
+            
+            try {
+                const response = await fetch('/api/classify', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({text})
+                });
+                
+                const data = await response.json();
+                
+                if (data.success) {
+                    let html = '<div class="classification-result"><h5>Результаты классификации:</h5>';
+                    data.classifications.forEach((cls, idx) => {
+                        html += `
+                            <div class="mt-2">
+                                <strong>${idx + 1}. ${cls.category}</strong><br>
+                                <div class="progress" style="height: 20px;">
+                                    <div class="progress-bar" style="width: ${cls.probability}%">${cls.probability}%</div>
+                                </div>
+                            </div>
+                        `;
+                    });
+                    html += '</div>';
+                    document.getElementById('classificationResult').innerHTML = html;
+                } else {
+                    document.getElementById('classificationResult').innerHTML = 
+                        `<div class="alert alert-danger">❌ ${data.error}</div>`;
+                }
+            } catch (error) {
+                document.getElementById('classificationResult').innerHTML = 
+                    `<div class="alert alert-danger">Ошибка: ${error.message}</div>`;
+            } finally {
+                document.getElementById('classifyLoading').style.display = 'none';
+            }
+        });
+
+        // Классификация работы из списка
+        function classifyWork(text) {
+            document.getElementById('classifyText').value = text;
+            document.getElementById('classifierCard').scrollIntoView({behavior: 'smooth'});
+        }
+
+        // Скачивание данных
+        function downloadData(format) {
+            window.location.href = `/api/download?format=${format}`;
+        }
+    </script>
+</body>
+</html>
